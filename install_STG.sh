@@ -9,14 +9,15 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
 
-# Logging and error handling
+# Logging file
 LOG_FILE="/var/log/stg_install.log"
+touch "$LOG_FILE" 2>/dev/null || LOG_FILE="/tmp/stg_install.log"
 exec 1>>"$LOG_FILE"
 exec 2>&1
 
 # Function to display messages
 msg() {
-    echo -e "${2}[$(date '+%Y-%m-%d %H:%M:%S')] $1${NC}"
+    echo -e "${2}[$(date '+%Y-%m-%d %H:%M:%S')] $1${NC}" | tee -a /dev/tty
 }
 
 # Function for error handling
@@ -35,10 +36,17 @@ check_root() {
 # Function to display a header
 display_header() {
     clear
-    echo -e "${GREEN}===========================================${NC}"
-    echo -e "${GREEN} SMTP to Gotify Forwarder Installer${NC}"
-    echo -e "${GREEN}===========================================${NC}"
-    echo ""
+    echo -e "${GREEN}===========================================${NC}" | tee -a /dev/tty
+    echo -e "${GREEN} SMTP to Gotify Forwarder Installer${NC}" | tee -a /dev/tty
+    echo -e "${GREEN}===========================================${NC}" | tee -a /dev/tty
+    echo "" | tee -a /dev/tty
+}
+
+# Function to check if a command exists
+check_command() {
+    if ! command -v "$1" &> /dev/null; then
+        error_exit "$1 is not installed and is required for this script."
+    fi
 }
 
 # Function to install dependencies for Go compilation on Debian 12
@@ -46,6 +54,7 @@ install_dependencies() {
     msg "Installing dependencies..." "${YELLOW}"
     apt update || error_exit "Failed to update package lists."
     apt install -y golang git curl || error_exit "Failed to install dependencies."
+    check_command go
     msg "Dependencies installed successfully." "${GREEN}"
 }
 
@@ -57,7 +66,7 @@ compile_go_app() {
     
     msg "Compiling Go application..." "${YELLOW}"
     cd /tmp/stg_build || error_exit "Failed to change to build directory."
-    go build -o smtp-to-gotify main.go || error_exit "Failed to compile Go application."
+    go build -o smtp-to-gotify main.go || error_exit "Failed to compile Go application. Check Go source for errors."
     msg "Compilation successful." "${GREEN}"
 }
 
@@ -89,11 +98,15 @@ RestartSec=10
 SyslogIdentifier=smtp-to-gotify
 Environment=RUN_AS_SERVICE=true
 StandardOutput=journal
-Standard.RangeError=journal
+StandardError=journal
 
 [Install]
 WantedBy=multi-user.target
 EOF
+
+    if [[ $? -ne 0 ]]; then
+        error_exit "Failed to create systemd service file."
+    fi
 
     systemctl daemon-reload || error_exit "Failed to reload systemd daemon."
     systemctl enable smtp-to-gotify.service || error_exit "Failed to enable systemd service."
@@ -113,7 +126,7 @@ main() {
     check_root
 
     msg "Starting installation process..." "${YELLOW}"
-    echo "Log file: $LOG_FILE"
+    msg "Log file: $LOG_FILE" "${YELLOW}"
     echo ""
 
     install_dependencies
@@ -123,12 +136,12 @@ main() {
     cleanup
 
     msg "Installation completed successfully!" "${GREEN}"
-    echo -e "${YELLOW}To start the service, run:${NC}"
-    echo -e "  systemctl start smtp-to-gotify"
-    echo -e "${YELLOW}To check the status of the service, run:${NC}"
-    echo -e "  systemctl status smtp-to-gotify"
-    echo ""
-    echo -e "${GREEN}===========================================${NC}"
+    echo -e "${YELLOW}To start the service, run:${NC}" | tee -a /dev/tty
+    echo -e "  systemctl start smtp-to-gotify" | tee -a /dev/tty
+    echo -e "${YELLOW}To check the status of the service, run:${NC}" | tee -a /dev/tty
+    echo -e "  systemctl status smtp-to-gotify" | tee -a /dev/tty
+    echo "" | tee -a /dev/tty
+    echo -e "${GREEN}===========================================${NC}" | tee -a /dev/tty
 }
 
 # Trap errors and display a message
