@@ -1,19 +1,17 @@
 #!/bin/bash
 
 # SMTP-to-Gotify Installer Script
-# This script installs or uninstalls the SMTP-to-Gotify application across multiple distributions.
-# Run with --uninstall to remove the application.
+# Installs or uninstalls the SMTP-to-Gotify application across multiple distributions.
+# Usage: curl -sSL https://raw.githubusercontent.com/NeoMetra/STG/main/install_STG.sh | bash
+# Uninstall: curl -sSL https://raw.githubusercontent.com/NeoMetra/STG/main/install_STG.sh | bash -s -- --uninstall
 
-# URLs for source files (easily changeable)
+# Configuration Variables (easily changeable)
 MAIN_GO_URL="https://raw.githubusercontent.com/NeoMetra/STG/main/main.go"
 SERVICE_FILE_URL="https://raw.githubusercontent.com/NeoMetra/STG/main/smtp-to-gotify.service"
-
-# Default installation paths
 DEFAULT_INSTALL_DIR="/opt/smtp-to-gotify"
-BINARY_PATH=""
-SERVICE_FILE="/etc/systemd/system/smtp-to-gotify.service"
-RC_SCRIPT="/usr/local/etc/rc.d/smtp-to-gotify"
-TEMP_DIR="/tmp/smtp-to-gotify-install"
+SYSTEMD_SERVICE_FILE="/etc/systemd/system/smtp-to-gotify.service"
+FREEBSD_RC_SCRIPT="/usr/local/etc/rc.d/smtp-to-gotify"
+TEMP_DIR="/tmp/smtp-to-gotify-install-$(date +%s)"
 
 # Colors for output
 RED='\033[0;31m'
@@ -22,24 +20,9 @@ YELLOW='\033[1;33m'
 CYAN='\033[0;36m'
 NC='\033[0m' # No Color
 
-# Spinner for long-running tasks
-spinner() {
-    local pid=$1
-    local delay=0.1
-    local spinstr='|/-\'
-    while [ -d "/proc/$pid" ]; do
-        local temp=${spinstr#?}
-        printf " [%c]  " "$spinstr"
-        local spinstr=$temp${spinstr%"$temp"}
-        sleep $delay
-        printf "\b\b\b\b\b\b"
-    done
-    printf "    \b\b\b\b"
-}
-
 # Function to log messages with timestamp
 log() {
-    echo -e "${2}[$(date '+%Y-%m-%d %H:%M:%S')] $1${NC}"
+    echo -e "${2}[$(date '+%H:%M:%S')] $1${NC}"
 }
 
 # Function to log errors and exit
@@ -61,118 +44,87 @@ info() {
     log "INFO: $1" "${YELLOW}"
 }
 
-# Function to log headers
+# Function to log headers for visual structure
 header() {
-    echo -e "${CYAN}===== $1 =====${NC}"
+    echo -e "${CYAN}=== $1 ===${NC}"
 }
 
-# Function to check if a command executed successfully
+# Function to check command status and handle errors
 check_status() {
     if [ $? -ne 0 ]; then
         error_exit "$1" "$2"
     fi
 }
 
-# Function to rollback changes if installation fails
+# Function to rollback changes on failure
 rollback() {
-    info "Rolling back changes due to installation failure..."
-    if [ -d "$INSTALL_DIR" ]; then
-        info "Removing installation directory: $INSTALL_DIR"
-        rm -rf "$INSTALL_DIR" 2>/dev/null || info "Warning: Failed to remove $INSTALL_DIR, manual cleanup may be needed."
-    fi
-    if [ -f "$SERVICE_FILE" ]; then
-        info "Removing systemd service file: $SERVICE_FILE"
-        rm -f "$SERVICE_FILE" 2>/dev/null || info "Warning: Failed to remove $SERVICE_FILE, manual cleanup may be needed."
-        if command -v systemctl >/dev/null 2>&1; then
-            systemctl daemon-reload 2>/dev/null || info "Warning: Failed to reload systemd, manual cleanup may be needed."
-        fi
-    fi
-    if [ -f "$RC_SCRIPT" ]; then
-        info "Removing rc.d script: $RC_SCRIPT"
-        rm -f "$RC_SCRIPT" 2>/dev/null || info "Warning: Failed to remove $RC_SCRIPT, manual cleanup may be needed."
-    fi
-    if [ -d "$TEMP_DIR" ]; then
-        info "Removing temporary directory: $TEMP_DIR"
-        rm -rf "$TEMP_DIR" 2>/dev/null || info "Warning: Failed to remove $TEMP_DIR, manual cleanup may be needed."
-    fi
-    error_exit "Installation failed. Changes have been rolled back where possible." "Check previous error messages for details."
+    info "Rolling back changes due to failure..."
+    [ -d "$INSTALL_DIR" ] && { info "Removing $INSTALL_DIR..."; rm -rf "$INSTALL_DIR" 2>/dev/null || info "Warning: Could not remove $INSTALL_DIR."; }
+    [ -f "$SYSTEMD_SERVICE_FILE" ] && { info "Removing $SYSTEMD_SERVICE_FILE..."; rm -f "$SYSTEMD_SERVICE_FILE" 2>/dev/null || info "Warning: Could not remove $SYSTEMD_SERVICE_FILE."; systemctl daemon-reload 2>/dev/null || info "Warning: Could not reload systemd."; }
+    [ -f "$FREEBSD_RC_SCRIPT" ] && { info "Removing $FREEBSD_RC_SCRIPT..."; rm -f "$FREEBSD_RC_SCRIPT" 2>/dev/null || info "Warning: Could not remove $FREEBSD_RC_SCRIPT."; }
+    [ -d "$TEMP_DIR" ] && { info "Removing temporary files..."; rm -rf "$TEMP_DIR" 2>/dev/null || info "Warning: Could not remove $TEMP_DIR."; }
+    error_exit "Installation failed. Changes rolled back where possible." "Review error messages above for details."
 }
 
-# Function to check if running as root
+# Function to check root privileges
 check_root() {
+    header "Privilege Check"
     if [ "$EUID" -ne 0 ]; then
-        error_exit "This script must be run as root (use sudo)." "Run with sudo or as root user."
+        error_exit "This script requires root privileges." "Run with 'sudo' or as root user."
     fi
-    success "Root privilege check passed."
+    success "Root privileges confirmed."
 }
 
-# Function to check pre-flight conditions
+# Function to perform pre-flight checks
 check_preflight() {
-    header "Pre-Flight Checks"
-    info "Checking for internet connectivity..."
-    if ! ping -c 1 -W 2 google.com >/dev/null 2>&1; then
-        error_exit "No internet connectivity detected." "Ensure your system is connected to the internet and try again."
-    fi
-    success "Internet connectivity confirmed."
+    header "System Checks"
+    info "Checking internet connectivity..."
+    ping -c 1 -W 2 google.com >/dev/null 2>&1 || { error_exit "No internet connection detected." "Ensure your system is online and retry."; }
+    success "Internet connection confirmed."
 
-    info "Checking for required tools..."
-    local required_tools=("curl" "tar")
-    for tool in "${required_tools[@]}"; do
-        if ! command -v "$tool" >/dev/null 2>&1; then
-            error_exit "$tool is not installed." "Install $tool using your package manager and try again."
-        fi
-    done
-    success "Required tools are installed."
+    info "Checking disk space..."
+    local space=$(df -k / | tail -1 | awk '{print $4}')
+    [ "$space" -lt 524288 ] && { error_exit "Insufficient disk space (less than 500MB on /)." "Free up space or choose a different install location."; }
+    success "Disk space sufficient."
 
-    info "Checking available disk space..."
-    local install_dir_space=$(df -k / | tail -1 | awk '{print $4}')
-    if [ "$install_dir_space" -lt 524288 ]; then # 500MB in KB
-        error_exit "Insufficient disk space on / (less than 500MB available)." "Free up disk space or choose a different installation directory."
-    fi
-    success "Sufficient disk space available."
+    info "Checking for required tools (curl)..."
+    command -v curl >/dev/null 2>&1 || { error_exit "curl is not installed." "Install curl using your package manager and retry."; }
+    success "Required tools present."
 }
 
-# Function to prompt user and validate input
+# Function to prompt user for input with default option
 prompt_user() {
     local prompt="$1"
     local var_name="$2"
-    local default_value="$3"
+    local default="$3"
     local input
-    if [ -n "$default_value" ]; then
-        read -p "$prompt (default: $default_value) [Enter to accept, 'cancel' to exit]: " input
-        if [ "$input" = "cancel" ]; then
-            error_exit "Installation cancelled by user." "Run the script again if you wish to install."
-        fi
-        if [ -z "$input" ]; then
-            input="$default_value"
-        fi
+    if [ -n "$default" ]; then
+        read -p "$prompt (default: $default) [or 'cancel' to exit]: " input
+        [ "$input" = "cancel" ] && { error_exit "Installation cancelled by user." "Run the script again to restart."; }
+        [ -z "$input" ] && input="$default"
     else
-        read -p "$prompt [Enter value, 'cancel' to exit]: " input
-        if [ "$input" = "cancel" ]; then
-            error_exit "Installation cancelled by user." "Run the script again if you wish to install."
-        fi
+        read -p "$prompt [or 'cancel' to exit]: " input
+        [ "$input" = "cancel" ] && { error_exit "Installation cancelled by user." "Run the script again to restart."; }
         while [ -z "$input" ]; do
             info "Input cannot be empty."
-            read -p "$prompt [Enter value, 'cancel' to exit]: " input
-            if [ "$input" = "cancel" ]; then
-                error_exit "Installation cancelled by user." "Run the script again if you wish to install."
-            fi
+            read -p "$prompt [or 'cancel' to exit]: " input
+            [ "$input" = "cancel" ] && { error_exit "Installation cancelled by user." "Run the script again to restart."; }
         done
     fi
     eval "$var_name='$input'"
 }
 
-# Function to prompt for yes/no and return 0 for yes, 1 for no
+# Function to prompt for yes/no response
 prompt_yes_no() {
     local prompt="$1"
     local response
-    read -p "$prompt (y/n) [Enter 'cancel' to exit]: " response
+    read -p "$prompt (y/n) [or 'cancel' to exit]: " response
     while true; do
         case "$response" in
             [Yy]*) return 0 ;;
             [Nn]*) return 1 ;;
-            cancel) error_exit "Installation cancelled by user." "Run the script again if you wish to install." ;;
-            *) info "Please answer y or n, or type 'cancel' to exit."; read -p "$prompt (y/n) [Enter 'cancel' to exit]: " response ;;
+            cancel) error_exit "Installation cancelled by user." "Run the script again to restart." ;;
+            *) info "Please enter 'y' or 'n'."; read -p "$prompt (y/n) [or 'cancel' to exit]: " response ;;
         esac
     done
 }
@@ -180,138 +132,114 @@ prompt_yes_no() {
 # Function to select distribution
 select_distribution() {
     header "Distribution Selection"
-    info "Select the distribution to install on:"
+    info "Which distribution are you installing on?"
     echo "1. Debian"
     echo "2. Ubuntu"
     echo "3. TrueNAS Scale"
     echo "4. pfSense (FreeBSD)"
     local choice
-    read -p "Enter the number of your distribution (1-4) [Enter 'cancel' to exit]: " choice
+    read -p "Enter number (1-4) [or 'cancel' to exit]: " choice
     while true; do
-        case $choice in
-            1) DISTRO="Debian"; return 0 ;;
-            2) DISTRO="Ubuntu"; return 0 ;;
-            3) DISTRO="TrueNAS Scale"; return 0 ;;
-            4) DISTRO="pfSense"; return 0 ;;
-            cancel) error_exit "Installation cancelled by user." "Run the script again if you wish to install." ;;
-            *) info "Invalid choice. Please select a number between 1 and 4."; read -p "Enter the number (1-4) [Enter 'cancel' to exit]: " choice ;;
+        case "$choice" in
+            1) DISTRO="Debian"; DISTRO_TYPE="linux"; return 0 ;;
+            2) DISTRO="Ubuntu"; DISTRO_TYPE="linux"; return 0 ;;
+            3) DISTRO="TrueNAS Scale"; DISTRO_TYPE="linux"; return 0 ;;
+            4) DISTRO="pfSense"; DISTRO_TYPE="freebsd"; return 0 ;;
+            cancel) error_exit "Installation cancelled by user." "Run the script again to restart." ;;
+            *) info "Invalid choice. Enter a number between 1 and 4."; read -p "Enter number (1-4) [or 'cancel' to exit]: " choice ;;
         esac
     done
 }
 
-# Function to install dependencies based on distribution with retry
-install_dependencies() {
-    header "Dependency Installation"
-    info "Installing dependencies for $DISTRO..."
-    local PKG_MANAGER UPDATE_CMD INSTALL_CMD
-    case $DISTRO in
-        "Debian" | "Ubuntu" | "TrueNAS Scale")
-            PKG_MANAGER="apt"
-            UPDATE_CMD="apt update"
-            INSTALL_CMD="apt install -y golang git curl"
-            ;;
-        "pfSense")
-            PKG_MANAGER="pkg"
-            UPDATE_CMD="pkg update"
-            INSTALL_CMD="pkg install -y go git curl"
-            ;;
-        *)
-            error_exit "Unsupported distribution for dependency installation." "Select a supported distribution."
-            ;;
-    esac
-
-    info "Updating package lists..."
-    if ! $UPDATE_CMD; then
-        error_exit "Failed to update package lists." "Check your package manager configuration and internet connection."
-    fi
-    success "Package lists updated."
-
-    info "Installing dependencies (Go, Git, Curl)..."
-    if ! $INSTALL_CMD; then
-        error_exit "Failed to install dependencies." "Ensure your package manager repositories are accessible and try again."
-    fi
-    success "Dependencies installed successfully."
-}
-
-# Function to download with retry
+# Function to download files with retry logic
 download_with_retry() {
     local url="$1"
     local output="$2"
     local max_retries=3
-    local retry_count=0
+    local retry=0
     info "Downloading from $url..."
-    while [ $retry_count -lt $max_retries ]; do
-        if curl -sSL "$url" -o "$output"; then
-            success "Download successful: $output"
+    while [ $retry -lt $max_retries ]; do
+        if curl -sSL -o "$output" "$url"; then
+            success "Downloaded $output."
             return 0
         fi
-        retry_count=$((retry_count + 1))
-        info "Download attempt $retry_count/$max_retries failed. Retrying in 5 seconds..."
-        sleep 5
+        retry=$((retry + 1))
+        info "Attempt $retry/$max_retries failed. Retrying in 3 seconds..."
+        sleep 3
     done
-    error_exit "Failed to download from $url after $max_retries attempts." "Check your internet connection or the URL availability."
+    error_exit "Failed to download $url after $max_retries attempts." "Check your internet connection or URL availability."
 }
 
-# Function to compile the Go program
-compile_program() {
-    header "Compilation"
-    info "Creating source directory: $INSTALL_DIR/src..."
-    mkdir -p "$INSTALL_DIR/src" || { error_exit "Failed to create source directory $INSTALL_DIR/src." "Check write permissions on $INSTALL_DIR."; }
-    success "Source directory created."
+# Function to install dependencies
+install_dependencies() {
+    header "Installing Dependencies"
+    local update_cmd install_cmd
+    if [ "$DISTRO_TYPE" = "linux" ]; then
+        update_cmd="apt update"
+        install_cmd="apt install -y golang git curl"
+    else
+        update_cmd="pkg update"
+        install_cmd="pkg install -y go git curl"
+    fi
 
+    info "Updating package lists..."
+    $update_cmd
+    check_status "Failed to update package lists." "Check your package manager configuration or internet connection."
+
+    info "Installing Go, Git, and Curl..."
+    $install_cmd
+    check_status "Failed to install dependencies." "Ensure your package repositories are accessible and retry."
+    success "Dependencies installed."
+}
+
+# Function to compile the program
+compile_program() {
+    header "Compiling Application"
+    info "Creating temporary directory for build..."
     mkdir -p "$TEMP_DIR" || { error_exit "Failed to create temporary directory $TEMP_DIR." "Check write permissions on /tmp."; }
     local temp_source="$TEMP_DIR/main.go"
     download_with_retry "$MAIN_GO_URL" "$temp_source"
-    cp "$temp_source" "$INSTALL_DIR/src/main.go" || { error_exit "Failed to copy source code to $INSTALL_DIR/src." "Check write permissions."; }
-    success "Source code copied to installation directory."
 
-    info "Compiling SMTP-to-Gotify binary (this may take a while)..."
-    cd "$INSTALL_DIR/src" || { error_exit "Failed to change directory to $INSTALL_DIR/src." "Check directory existence."; }
-    if ! go build -o "$BINARY_PATH" main.go; then
-        error_exit "Failed to compile SMTP-to-Gotify binary." "Ensure Go is installed correctly (run 'go version') and dependencies are met."
-    fi
+    info "Creating installation directory structure..."
+    mkdir -p "$INSTALL_DIR/src" || { error_exit "Failed to create $INSTALL_DIR/src." "Check write permissions."; }
+    cp "$temp_source" "$INSTALL_DIR/src/main.go" || { error_exit "Failed to copy source code." "Check write permissions."; }
+    success "Source code prepared at $INSTALL_DIR/src."
+
+    info "Compiling binary (this may take a moment)..."
+    cd "$INSTALL_DIR/src" || { error_exit "Failed to access $INSTALL_DIR/src." "Check directory permissions."; }
+    go build -o "$BINARY_PATH" main.go
+    check_status "Failed to compile SMTP-to-Gotify binary." "Ensure Go is installed correctly (run 'go version')."
+    chmod +x "$BINARY_PATH"
+    check_status "Failed to set executable permissions on $BINARY_PATH." "Check write permissions."
     success "Binary compiled at $BINARY_PATH."
-
-    info "Setting executable permissions on binary..."
-    if ! chmod +x "$BINARY_PATH"; then
-        error_exit "Failed to set executable permissions on $BINARY_PATH." "Check write permissions on the directory."
-    fi
-    success "Binary permissions set."
 }
 
 # Function to set up systemd service for Linux
 setup_systemd_service() {
-    header "Systemd Service Setup"
-    info "Downloading systemd service file from $SERVICE_FILE_URL..."
+    header "Setting Up Systemd Service"
     local temp_service="$TEMP_DIR/smtp-to-gotify.service"
     download_with_retry "$SERVICE_FILE_URL" "$temp_service"
-    cp "$temp_service" "$SERVICE_FILE" || { error_exit "Failed to copy service file to $SERVICE_FILE." "Check write permissions."; }
-    success "Service file downloaded to $SERVICE_FILE."
+    cp "$temp_service" "$SYSTEMD_SERVICE_FILE" || { error_exit "Failed to copy service file to $SYSTEMD_SERVICE_FILE." "Check write permissions."; }
 
-    info "Configuring service file with user $SERVICE_USER..."
-    if ! sed -i "s/%USER%/$SERVICE_USER/g" "$SERVICE_FILE"; then
-        error_exit "Failed to configure service file with user $SERVICE_USER." "Check write permissions on $SERVICE_FILE."
-    fi
-    success "Service file configured."
+    info "Configuring service with user $SERVICE_USER..."
+    sed -i "s/%USER%/$SERVICE_USER/g" "$SYSTEMD_SERVICE_FILE"
+    check_status "Failed to configure service file." "Check write permissions on $SYSTEMD_SERVICE_FILE."
 
-    info "Reloading systemd daemon..."
-    if ! systemctl daemon-reload; then
-        error_exit "Failed to reload systemd daemon." "Check systemd installation."
-    fi
-    success "Systemd daemon reloaded."
+    info "Reloading systemd configuration..."
+    systemctl daemon-reload
+    check_status "Failed to reload systemd configuration." "Check systemd installation."
 
-    info "Enabling SMTP-to-Gotify service to start on boot..."
-    if ! systemctl enable smtp-to-gotify; then
-        error_exit "Failed to enable SMTP-to-Gotify service." "Check systemd configuration."
-    fi
-    success "Service enabled to start on boot."
+    info "Enabling service to start on boot..."
+    systemctl enable smtp-to-gotify
+    check_status "Failed to enable service." "Check systemd configuration."
+    success "Systemd service configured and enabled."
 }
 
-# Function to set up rc.d script for FreeBSD/pfSense
-setup_rcd_script() {
-    header "FreeBSD rc.d Script Setup"
-    info "Creating rc.d script for FreeBSD/pfSense at $RC_SCRIPT..."
-    cat > "$RC_SCRIPT" << 'EOF'
+# Function to set up rc.d script for FreeBSD
+setup_freebsd_rc_script() {
+    header "Setting Up FreeBSD Service"
+    info "Creating rc.d script at $FREEBSD_RC_SCRIPT..."
+    cat > "$FREEBSD_RC_SCRIPT" << 'EOF'
 #!/bin/sh
 
 # PROVIDE: smtp_to_gotify
@@ -327,7 +255,6 @@ load_rc_config $name
 : ${smtp_to_gotify_enable="NO"}
 : ${smtp_to_gotify_user="%USER%"}
 : ${smtp_to_gotify_binary="/opt/smtp-to-gotify/smtp-to-gotify"}
-: ${smtp_to_gotify_workdir="/opt/smtp-to-gotify"}
 : ${smtp_to_gotify_env="RUN_AS_SERVICE=true"}
 
 pidfile="/var/run/${name}.pid"
@@ -339,9 +266,7 @@ stop_postcmd="smtp_to_gotify_poststop"
 
 smtp_to_gotify_prestart()
 {
-    if [ ! -x "${smtp_to_gotify_binary}" ]; then
-        err 1 "Binary not found: ${smtp_to_gotify_binary}"
-    fi
+    [ ! -x "${smtp_to_gotify_binary}" ] && err 1 "Binary not found: ${smtp_to_gotify_binary}"
     return 0
 }
 
@@ -353,111 +278,79 @@ smtp_to_gotify_poststop()
 
 run_rc_command "$1"
 EOF
-    if [ $? -ne 0 ]; then
-        error_exit "Failed to create rc.d script at $RC_SCRIPT." "Check write permissions on $RC_SCRIPT directory."
-    fi
-    success "rc.d script created."
+    check_status "Failed to create rc.d script at $FREEBSD_RC_SCRIPT." "Check write permissions."
 
     info "Configuring rc.d script with user $SERVICE_USER..."
-    if ! sed -i '' "s/%USER%/$SERVICE_USER/g" "$RC_SCRIPT"; then
-        error_exit "Failed to configure rc.d script with user $SERVICE_USER." "Check write permissions on $RC_SCRIPT."
-    fi
-    success "rc.d script configured."
+    sed -i '' "s/%USER%/$SERVICE_USER/g" "$FREEBSD_RC_SCRIPT"
+    check_status "Failed to configure rc.d script." "Check write permissions on $FREEBSD_RC_SCRIPT."
 
-    info "Setting executable permissions on rc.d script..."
-    if ! chmod +x "$RC_SCRIPT"; then
-        error_exit "Failed to set executable permissions on $RC_SCRIPT." "Check write permissions."
-    fi
-    success "rc.d script permissions set."
+    info "Setting executable permissions..."
+    chmod +x "$FREEBSD_RC_SCRIPT"
+    check_status "Failed to set executable permissions." "Check write permissions."
 
-    info "Enabling SMTP-to-Gotify service to start on boot..."
-    if ! command -v sysrc >/dev/null 2>&1; then
-        error_exit "sysrc command not found on FreeBSD." "Manually enable the service by adding smtp_to_gotify_enable=\"YES\" to /etc/rc.conf."
-    fi
-    if ! sysrc smtp_to_gotify_enable="YES"; then
-        error_exit "Failed to enable SMTP-to-Gotify service in rc.conf." "Manually enable the service in /etc/rc.conf."
-    fi
-    success "Service enabled to start on boot."
+    info "Enabling service to start on boot..."
+    command -v sysrc >/dev/null 2>&1 || { error_exit "sysrc command not found." "Manually add 'smtp_to_gotify_enable=\"YES\"' to /etc/rc.conf."; }
+    sysrc smtp_to_gotify_enable="YES"
+    check_status "Failed to enable service in rc.conf." "Manually enable in /etc/rc.conf."
+    success "FreeBSD service configured and enabled."
 }
 
 # Function to uninstall the application
 uninstall() {
     header "Uninstalling SMTP-to-Gotify"
     select_distribution
-    success "Selected distribution: $DISTRO for uninstallation."
+    success "Selected distribution: $DISTRO."
 
-    if [ "$DISTRO" != "pfSense" ]; then
-        info "Stopping SMTP-to-Gotify service..."
-        systemctl stop smtp-to-gotify 2>/dev/null && success "Service stopped." || info "Service was not running or not installed."
-
-        info "Disabling SMTP-to-Gotify service..."
-        systemctl disable smtp-to-gotify 2>/dev/null && success "Service disabled." || info "Service was not enabled or not installed."
-
-        info "Removing systemd service file: $SERVICE_FILE..."
-        rm -f "$SERVICE_FILE" 2>/dev/null && success "Service file removed." || info "Service file not found or already removed."
-        systemctl daemon-reload 2>/dev/null && success "Systemd daemon reloaded." || info "Failed to reload systemd, manual cleanup may be needed."
+    if [ "$DISTRO_TYPE" = "linux" ]; then
+        info "Stopping service..."
+        systemctl stop smtp-to-gotify 2>/dev/null && success "Service stopped." || info "Service was not running."
+        info "Disabling service..."
+        systemctl disable smtp-to-gotify 2>/dev/null && success "Service disabled." || info "Service was not enabled."
+        info "Removing service file..."
+        rm -f "$SYSTEMD_SERVICE_FILE" 2>/dev/null && success "Service file removed." || info "Service file not found."
+        systemctl daemon-reload 2>/dev/null || info "Warning: Could not reload systemd."
     else
-        info "Stopping SMTP-to-Gotify service on FreeBSD..."
-        service smtp_to_gotify stop 2>/dev/null && success "Service stopped." || info "Service was not running or not installed."
-
-        info "Disabling SMTP-to-Gotify service in rc.conf..."
-        if command -v sysrc >/dev/null 2>&1; then
-            sysrc -x smtp_to_gotify_enable 2>/dev/null && success "Service disabled." || info "Service was not enabled or not installed."
-        else
-            info "sysrc not found, manual cleanup of /etc/rc.conf may be needed."
-        fi
-
-        info "Removing rc.d script: $RC_SCRIPT..."
-        rm -f "$RC_SCRIPT" 2>/dev/null && success "rc.d script removed." || info "rc.d script not found or already removed."
+        info "Stopping service..."
+        service smtp_to_gotify stop 2>/dev/null && success "Service stopped." || info "Service was not running."
+        info "Disabling service..."
+        command -v sysrc >/dev/null 2>&1 && sysrc -x smtp_to_gotify_enable 2>/dev/null && success "Service disabled." || info "Service was not enabled or sysrc not found."
+        info "Removing rc.d script..."
+        rm -f "$FREEBSD_RC_SCRIPT" 2>/dev/null && success "Script removed." || info "Script not found."
     fi
 
-    info "Removing installation directory (if it exists)..."
-    if prompt_yes_no "Do you want to remove the installation directory and all its contents (including configuration and logs)?"; then
-        if [ -d "$DEFAULT_INSTALL_DIR" ]; then
-            INSTALL_DIR="$DEFAULT_INSTALL_DIR"
-        else
-            prompt_user "Enter the installation directory to remove" "INSTALL_DIR"
-        fi
-        if [ -d "$INSTALL_DIR" ]; then
-            rm -rf "$INSTALL_DIR" 2>/dev/null && success "Installation directory $INSTALL_DIR removed." || info "Failed to remove $INSTALL_DIR, manual cleanup may be needed."
-        else
-            info "Directory $INSTALL_DIR does not exist, no removal needed."
-        fi
+    if prompt_yes_no "Remove installation directory and all contents (including configs and logs)?"; then
+        local install_dir="$DEFAULT_INSTALL_DIR"
+        [ ! -d "$install_dir" ] && prompt_user "Enter installation directory to remove" "install_dir"
+        [ -d "$install_dir" ] && { rm -rf "$install_dir" && success "Removed $install_dir." || info "Warning: Could not remove $install_dir."; } || info "Directory $install_dir not found."
     else
-        info "Installation directory not removed as per user request."
+        info "Installation directory not removed."
     fi
 
-    success "SMTP-to-Gotify has been uninstalled successfully."
+    success "SMTP-to-Gotify uninstalled successfully."
     exit 0
 }
 
 # Main installation process
 main_install() {
-    header "Welcome to SMTP-to-Gotify Installation"
-    info "This script will guide you through installing SMTP-to-Gotify, a tool to forward SMTP emails to Gotify notifications."
-    info "You can cancel at any time by typing 'cancel' at prompts."
+    header "SMTP-to-Gotify Installation"
+    info "This script installs SMTP-to-Gotify, forwarding SMTP emails to Gotify notifications."
+    info "Type 'cancel' at any prompt to exit."
     echo ""
 
-    # Check if running as root
     check_root
-
-    # Perform pre-flight checks
     check_preflight
 
-    # Check if already installed
-    if [ -f "$SERVICE_FILE" ] || [ -f "$RC_SCRIPT" ] || [ -d "$DEFAULT_INSTALL_DIR" ]; then
-        if prompt_yes_no "SMTP-to-Gotify appears to be installed. Do you want to proceed with reinstallation (existing files may be overwritten)?"; then
+    if [ -f "$SYSTEMD_SERVICE_FILE" ] || [ -f "$FREEBSD_RC_SCRIPT" ] || [ -d "$DEFAULT_INSTALL_DIR" ]; then
+        if prompt_yes_no "SMTP-to-Gotify seems to be installed. Proceed with reinstallation (files may be overwritten)?"; then
             info "Proceeding with reinstallation."
         else
-            error_exit "Installation aborted by user." "Run the script again if you wish to install."
+            error_exit "Installation aborted." "Run the script again if needed."
         fi
     fi
 
-    # Prompt for distribution
     select_distribution
-    success "Selected distribution: $DISTRO"
+    success "Selected: $DISTRO."
 
-    # Prompt for installation directory with validation
     if prompt_yes_no "Use default installation directory ($DEFAULT_INSTALL_DIR)?"; then
         INSTALL_DIR="$DEFAULT_INSTALL_DIR"
     else
@@ -468,107 +361,88 @@ main_install() {
                 valid_dir=true
             elif mkdir -p "$INSTALL_DIR" 2>/dev/null && [ -w "$INSTALL_DIR" ]; then
                 valid_dir=true
-                rm -rf "$INSTALL_DIR" 2>/dev/null # Clean up test directory
+                rm -rf "$INSTALL_DIR" 2>/dev/null
             else
                 info "Directory $INSTALL_DIR is not writable or cannot be created."
             fi
         done
     fi
     BINARY_PATH="${INSTALL_DIR}/smtp-to-gotify"
-    success "Installation directory set to: $INSTALL_DIR"
+    success "Installation directory: $INSTALL_DIR."
 
-    # Prompt for service user
-    prompt_user "Enter the user to run the SMTP-to-Gotify service" "SERVICE_USER" "smtp-gotify"
+    prompt_user "Enter user to run the service" "SERVICE_USER" "smtp-gotify"
     if ! id "$SERVICE_USER" >/dev/null 2>&1; then
         info "Creating user $SERVICE_USER..."
-        if [ "$DISTRO" != "pfSense" ]; then
-            useradd -m -s /bin/false "$SERVICE_USER" || { error_exit "Failed to create user $SERVICE_USER." "Check user creation permissions."; }
+        if [ "$DISTRO_TYPE" = "linux" ]; then
+            useradd -m -s /bin/false "$SERVICE_USER"
         else
-            if ! command -v pw >/dev/null 2>&1; then
-                error_exit "pw command not found on FreeBSD. Cannot create user $SERVICE_USER." "Install pw or use an existing user."
-            fi
-            pw useradd -n "$SERVICE_USER" -s /sbin/nologin -m || { error_exit "Failed to create user $SERVICE_USER." "Check user creation permissions."; }
+            command -v pw >/dev/null 2>&1 || { error_exit "pw command not found on FreeBSD." "Create user manually or use an existing one."; }
+            pw useradd -n "$SERVICE_USER" -s /sbin/nologin -m
         fi
+        check_status "Failed to create user $SERVICE_USER." "Check user creation permissions."
         success "User $SERVICE_USER created."
     else
-        success "User $SERVICE_USER already exists."
+        success "User $SERVICE_USER exists."
     fi
-    success "Service will run as user: $SERVICE_USER"
 
-    # Summary of choices before proceeding
-    header "Installation Summary"
+    header "Confirm Settings"
     info "Distribution: $DISTRO"
-    info "Installation Directory: $INSTALL_DIR"
+    info "Install Directory: $INSTALL_DIR"
     info "Service User: $SERVICE_USER"
-    if ! prompt_yes_no "Are these settings correct? Proceed with installation?"; then
-        error_exit "Installation aborted by user." "Run the script again to restart with different settings."
+    if ! prompt_yes_no "Proceed with these settings?"; then
+        error_exit "Installation aborted." "Run the script again with different settings."
     fi
 
-    # Create installation directory and set permissions
     header "Directory Setup"
-    info "Creating installation directory: $INSTALL_DIR..."
-    mkdir -p "$INSTALL_DIR" || { error_exit "Failed to create installation directory $INSTALL_DIR." "Check write permissions on parent directory."; }
-    chown "$SERVICE_USER:$SERVICE_USER" "$INSTALL_DIR" || { error_exit "Failed to set ownership of $INSTALL_DIR to $SERVICE_USER." "Check user permissions."; }
-    success "Installation directory created and permissions set."
+    info "Creating $INSTALL_DIR..."
+    mkdir -p "$INSTALL_DIR" || { error_exit "Failed to create $INSTALL_DIR." "Check write permissions."; }
+    chown "$SERVICE_USER:$SERVICE_USER" "$INSTALL_DIR" || { error_exit "Failed to set ownership of $INSTALL_DIR." "Check user permissions."; }
+    success "Directory created and permissions set."
 
-    # Install dependencies
     install_dependencies || rollback
-
-    # Compile the program
     compile_program || rollback
 
-    # Set up the service based on distribution
-    if [ "$DISTRO" != "pfSense" ]; then
+    if [ "$DISTRO_TYPE" = "linux" ]; then
         setup_systemd_service || rollback
     else
-        setup_rcd_script || rollback
+        setup_freebsd_rc_script || rollback
     fi
 
-    # Ask if user wants to start the service now
     header "Service Start"
-    if prompt_yes_no "Do you want to start the SMTP-to-Gotify service now?"; then
-        if [ "$DISTRO" != "pfSense" ]; then
-            info "Starting SMTP-to-Gotify service..."
-            systemctl start smtp-to-gotify || { error_exit "Failed to start SMTP-to-Gotify service." "Check systemd logs with 'journalctl -u smtp-to-gotify'."; }
-            success "SMTP-to-Gotify service started successfully."
+    if prompt_yes_no "Start the SMTP-to-Gotify service now?"; then
+        if [ "$DISTRO_TYPE" = "linux" ]; then
+            info "Starting service..."
+            systemctl start smtp-to-gotify
+            check_status "Failed to start service." "Check logs with 'journalctl -u smtp-to-gotify'."
+            success "Service started."
         else
-            info "Starting SMTP-to-Gotify service on FreeBSD..."
-            service smtp_to_gotify start || { error_exit "Failed to start SMTP-to-Gotify service." "Check service logs or configuration."; }
-            success "SMTP-to-Gotify service started successfully."
+            info "Starting service..."
+            service smtp_to_gotify start
+            check_status "Failed to start service." "Check service configuration."
+            success "Service started."
         fi
     else
-        if [ "$DISTRO" != "pfSense" ]; then
-            info "Service not started. You can start it later with 'systemctl start smtp-to-gotify'."
-        else
-            info "Service not started. You can start it later with 'service smtp_to_gotify start'."
-        fi
+        info "Service not started. Start it later manually."
     fi
 
-    # Final summary
     header "Installation Complete"
-    success "SMTP-to-Gotify installation completed successfully!"
-    echo ""
-    info "Key Information:"
-    info "  - Configuration files are located at: $INSTALL_DIR/config.yaml"
-    info "  - Run '$BINARY_PATH config' to configure settings interactively."
-    if [ "$DISTRO" != "pfSense" ]; then
-        info "  - Use 'systemctl status smtp-to-gotify' to check service status."
-        info "  - Use 'systemctl start smtp-to-gotify' to start the service if not started."
-        info "  - Use 'systemctl stop smtp-to-gotify' to stop the service."
+    success "SMTP-to-Gotify installed successfully!"
+    info "Configuration: $INSTALL_DIR/config.yaml"
+    info "Interactive Config: $BINARY_PATH config"
+    if [ "$DISTRO_TYPE" = "linux" ]; then
+        info "Service Status: systemctl status smtp-to-gotify"
+        info "Start Service: systemctl start smtp-to-gotify"
+        info "Stop Service: systemctl stop smtp-to-gotify"
     else
-        info "  - Use 'service smtp_to_gotify status' to check service status."
-        info "  - Use 'service smtp_to_gotify start' to start the service if not started."
-        info "  - Use 'service smtp_to_gotify stop' to stop the service."
+        info "Service Status: service smtp_to_gotify status"
+        info "Start Service: service smtp_to_gotify start"
+        info "Stop Service: service smtp_to_gotify stop"
     fi
-    info "  - To uninstall, run this script with '--uninstall' argument."
-    echo ""
-    success "Thank you for installing SMTP-to-Gotify!"
+    info "Uninstall: Run this script with '--uninstall'."
 }
 
 # Check for uninstall argument
-if [ "$1" = "--uninstall" ]; then
-    uninstall
-fi
+[ "$1" = "--uninstall" ] && uninstall
 
 # Run main installation
 main_install
