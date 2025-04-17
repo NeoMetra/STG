@@ -1,0 +1,21 @@
+[Unit]
+Description=SMTP to Gotify Forwarder
+After=network.target
+
+[Service]
+Type=simple
+User=%USER%
+WorkingDirectory=/opt/smtp-to-gotify
+Environment=RUN_AS_SERVICE=true
+ExecStart=/opt/smtp-to-gotify/smtp-to-gotify
+Restart=always
+RestartSec=10
+SyslogIdentifier=smtp-to-gotify
+ProtectSystem=full
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+LimitNOFILE=4096
+
+[Install]
+WantedBy=multi-user.target
