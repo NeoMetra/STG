@@ -46,7 +46,7 @@ const (
     StatusUpdateBuffer    = 200 // Increased buffer to prevent dropped status messages
     StatusUpdateDebounce  = 100 * time.Millisecond
     DefaultSMTPPort       = ":2525"
-    DefaultSMTPDomain     = "localhost"
+    DefaultSMTPDomain     = "127.0.0.1"
     DefaultSMTPUser       = "admin"
     DefaultSMTPPass       = "password"
     DefaultGotifyHost     = "https://gotify.example.com"
@@ -1164,8 +1164,8 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
                                 return
                             }
                             appendToStatus("Stopping smtp-to-gotify service...")
-                            // Changed to use FreeBSD service command
-                            stopCmd := exec.Command("service", "smtp_to_gotify", "stop")
+                            // Changed to use SystemD systemctl command
+                            stopCmd := exec.Command("systemctl", "stop", "smtp-to-gotify")
                             stopOutput, stopErr := stopCmd.CombinedOutput()
                             if stopErr != nil {
                                 appendToStatus(color.RedString("Failed to stop service: %v, output: %s", stopErr, string(stopOutput)))
@@ -1173,8 +1173,8 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
                             }
                             appendToStatus(color.GreenString("Service stopped successfully"))
                             appendToStatus("Starting smtp-to-gotify service with updated config...")
-                            // Changed to use FreeBSD service command
-                            startCmd := exec.Command("service", "smtp_to_gotify", "start")
+                            // Changed to use SystemD systemctl command
+                            startCmd := exec.Command("systemctl", "start", "smtp-to-gotify")
                             startOutput, startErr := startCmd.CombinedOutput()
                             if startErr != nil {
                                 appendToStatus(color.RedString("Failed to start service: %v, output: %s", startErr, string(startOutput)))
@@ -1344,77 +1344,85 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
             } else {
                 m.GotifyConfigs, cmd = m.GotifyConfigs.Update(msg)
             }
-case "ServiceMenu":
-    if key.Matches(msg, m.Keys.Enter) {
-        selected := m.ServiceMenu.SelectedItem()
-        if selected != nil {
-            item := selected.(MenuItem)
-            switch item.Title() {
-            case "Back to Main Menu":
+        case "ServiceMenu":
+            if key.Matches(msg, m.Keys.Enter) {
+                selected := m.ServiceMenu.SelectedItem()
+                if selected != nil {
+                    item := selected.(MenuItem)
+                    switch item.Title() {
+                    case "Back to Main Menu":
+                        m.CurrentScreen = "MainMenu"
+                    case "Stop Service":
+                        go func() {
+                            appendToStatus("Stopping smtp-to-gotify service...")
+                            // Changed to use SystemD systemctl command
+                            cmd := exec.Command("systemctl", "stop", "smtp-to-gotify")
+                            output, err := cmd.CombinedOutput()
+                            // Recommendation 10: Improved error handling for service commands
+                            if err != nil {
+                                appendToStatus(color.RedString("Failed to stop service: %v, output: %s", err, string(output)))
+                                logEvent("error", fmt.Sprintf("Failed to stop service: %v", err), fmt.Sprintf("systemctl stop command failed with output: %s", string(output)))
+                            } else {
+                                appendToStatus(color.GreenString("Service stopped successfully"))
+                            }
+                        }()
+                    case "Start Service":
+                        go func() {
+                            appendToStatus("Starting smtp-to-gotify service...")
+                            // Changed to use SystemD systemctl command
+                            cmd := exec.Command("systemctl", "start", "smtp-to-gotify")
+                            output, err := cmd.CombinedOutput()
+                            // Recommendation 10: Improved error handling for service commands
+                            if err != nil {
+                                appendToStatus(color.RedString("Failed to start service: %v, output: %s", err, string(output)))
+                                logEvent("error", fmt.Sprintf("Failed to start service: %v", err), fmt.Sprintf("systemctl start command failed with output: %s", string(output)))
+                            } else {
+                                appendToStatus(color.GreenString("Service started successfully"))
+                            }
+                        }()
+                    case "Apply Config and Restart Service":
+                        go func() {
+                            if err := saveConfig(); err != nil {
+                                appendToStatus(color.RedString("Failed to save config: %v", err))
+                                return
+                            }
+                            appendToStatus("Restarting smtp-to-gotify service...")
+                            // Changed to use SystemD systemctl command
+                            cmd := exec.Command("systemctl", "restart", "smtp-to-gotify")
+                            output, err := cmd.CombinedOutput()
+                            // Recommendation 10: Improved error handling for service commands
+                            if err != nil {
+                                appendToStatus(color.RedString("Failed to restart service: %v, output: %s", err, string(output)))
+                                logEvent("error", fmt.Sprintf("Failed to restart service: %v", err), fmt.Sprintf("systemctl restart command failed with output: %s", string(output)))
+                            } else {
+                                appendToStatus(color.GreenString("Service restarted successfully"))
+                            }
+                        }()
+                    case "Service Status":
+                        go func() {
+                            appendToStatus("Fetching smtp-to-gotify service status...")
+                            // Changed to use SystemD systemctl command
+                            cmd := exec.Command("systemctl", "status", "smtp-to-gotify")
+                            output, err := cmd.CombinedOutput()
+                            // Recommendation 10: Improved error handling for service commands
+                            if err != nil {
+                                appendToStatus(color.RedString("Failed to fetch service status: %v", err))
+                                logEvent("error", fmt.Sprintf("Failed to fetch service status: %v", err), fmt.Sprintf("systemctl status command failed with output: %s", string(output)))
+                            } else {
+                                outStr := string(output)
+                                if len(outStr) > 500 {
+                                    outStr = outStr[:500] + "... (truncated)"
+                                }
+                                appendToStatus(color.CyanString("Service Status:\n%s", outStr))
+                            }
+                        }()
+                    }
+                }
+            } else if key.Matches(msg, m.Keys.Back) {
                 m.CurrentScreen = "MainMenu"
-            case "Stop Service":
-                go func() {
-                    appendToStatus("Stopping smtp-to-gotify service...")
-                    cmd := exec.Command("systemctl", "stop", "smtp-to-gotify")
-                    output, err := cmd.CombinedOutput()
-                    if err != nil {
-                        appendToStatus(color.RedString("Failed to stop service: %v, output: %s", err, string(output)))
-                        logEvent("error", fmt.Sprintf("Failed to stop service: %v", err), fmt.Sprintf("systemctl stop command failed with output: %s", string(output)))
-                    } else {
-                        appendToStatus(color.GreenString("Service stopped successfully"))
-                    }
-                }()
-            case "Start Service":
-                go func() {
-                    appendToStatus("Starting smtp-to-gotify service...")
-                    cmd := exec.Command("systemctl", "start", "smtp-to-gotify")
-                    output, err := cmd.CombinedOutput()
-                    if err != nil {
-                        appendToStatus(color.RedString("Failed to start service: %v, output: %s", err, string(output)))
-                        logEvent("error", fmt.Sprintf("Failed to start service: %v", err), fmt.Sprintf("systemctl start command failed with output: %s", string(output)))
-                    } else {
-                        appendToStatus(color.GreenString("Service started successfully"))
-                    }
-                }()
-            case "Apply Config and Restart Service":
-                go func() {
-                    if err := saveConfig(); err != nil {
-                        appendToStatus(color.RedString("Failed to save config: %v", err))
-                        return
-                    }
-                    appendToStatus("Restarting smtp-to-gotify service...")
-                    cmd := exec.Command("systemctl", "restart", "smtp-to-gotify")
-                    output, err := cmd.CombinedOutput()
-                    if err != nil {
-                        appendToStatus(color.RedString("Failed to restart service: %v, output: %s", err, string(output)))
-                        logEvent("error", fmt.Sprintf("Failed to restart service: %v", err), fmt.Sprintf("systemctl restart command failed with output: %s", string(output)))
-                    } else {
-                        appendToStatus(color.GreenString("Service restarted successfully"))
-                    }
-                }()
-            case "Service Status":
-                go func() {
-                    appendToStatus("Fetching smtp-to-gotify service status...")
-                    cmd := exec.Command("systemctl", "status", "smtp-to-gotify")
-                    output, err := cmd.CombinedOutput()
-                    if err != nil {
-                        appendToStatus(color.RedString("Failed to fetch service status: %v", err))
-                        logEvent("error", fmt.Sprintf("Failed to fetch service status: %v", err), fmt.Sprintf("systemctl status command failed with output: %s", string(output)))
-                    } else {
-                        outStr := string(output)
-                        if len(outStr) > 500 {
-                            outStr = outStr[:500] + "... (truncated)"
-                        }
-                        appendToStatus(color.CyanString("Service Status:\n%s", outStr))
-                    }
-                }()
+            } else {
+                m.ServiceMenu, cmd = m.ServiceMenu.Update(msg)
             }
-        }
-    } else if key.Matches(msg, m.Keys.Back) {
-        m.CurrentScreen = "MainMenu"
-    } else {
-        m.ServiceMenu, cmd = m.ServiceMenu.Update(msg)
-    }
         case "LogViewer":
             if key.Matches(msg, m.Keys.Back) {
                 m.CurrentScreen = m.LogViewer.BackScreen
@@ -1725,22 +1733,52 @@ func interactiveConfig() error {
     return nil
 }
 
-// Recommendation 14: Modified startServer for graceful shutdown
+// Recommendation 14: Modified startServer for graceful shutdown and specific IP binding
 func startServer(config AppConfig) error {
-    listener, err := net.Listen("tcp", config.SMTP.Addr)
-    if err != nil {
-        logEvent("error", fmt.Sprintf("Failed to start TCP listener on %s: %v", config.SMTP.Addr, err), fmt.Sprintf("Unable to bind TCP listener to address %s for SMTP server startup: %v", config.SMTP.Addr, err))
-        return fmt.Errorf("failed to start TCP listener on %s: %v", config.SMTP.Addr, err)
+    // Resolve the IP address from Domain (could be a hostname or direct IP)
+    bindIP := config.SMTP.Domain
+    // If Domain is not a direct IP, attempt to resolve it
+    if net.ParseIP(bindIP) == nil {
+        ips, err := net.LookupIP(bindIP)
+        if err != nil || len(ips) == 0 {
+            logEvent("error", fmt.Sprintf("Failed to resolve IP for domain %s: %v", bindIP, err), fmt.Sprintf("Unable to resolve IP address for binding SMTP server from domain %s: %v", bindIP, err))
+            return fmt.Errorf("failed to resolve IP for domain %s: %v", bindIP, err)
+        }
+        // Use the first resolved IP (preferably IPv4 if available)
+        bindIP = ips[0].String()
+        for _, ip := range ips {
+            if ip.To4() != nil {
+                bindIP = ip.String()
+                break
+            }
+        }
+        appendToStatus(fmt.Sprintf("Resolved domain %s to IP %s for SMTP binding", config.SMTP.Domain, bindIP))
     }
-    appendToStatus(fmt.Sprintf("SMTP server started on %s, forwarding to Gotify at %s", config.SMTP.Addr, config.Gotify.GotifyHost))
-    logEvent("connection", fmt.Sprintf("SMTP server started on %s, forwarding to Gotify at %s", config.SMTP.Addr, config.Gotify.GotifyHost), fmt.Sprintf("SMTP server successfully started and listening on %s, configured to forward incoming emails as notifications to Gotify server at %s.", config.SMTP.Addr, config.Gotify.GotifyHost))
+    // Construct the binding address (IP:Port)
+    bindAddr := bindIP
+    // If Addr starts with a colon, treat it as port and append to IP
+    if strings.HasPrefix(config.SMTP.Addr, ":") {
+        bindAddr = bindIP + config.SMTP.Addr
+    } else if config.SMTP.Addr != "" {
+        // Otherwise, use Addr as is if it contains IP and port (fallback)
+        bindAddr = config.SMTP.Addr
+        appendToStatus(fmt.Sprintf("Warning: Using full addr %s instead of domain-derived IP due to format", config.SMTP.Addr))
+    }
+    // Start the TCP listener with the constructed address
+    listener, err := net.Listen("tcp", bindAddr)
+    if err != nil {
+        logEvent("error", fmt.Sprintf("Failed to start TCP listener on %s: %v", bindAddr, err), fmt.Sprintf("Unable to bind TCP listener to address %s for SMTP server startup: %v", bindAddr, err))
+        return fmt.Errorf("failed to start TCP listener on %s: %v", bindAddr, err)
+    }
+    appendToStatus(fmt.Sprintf("SMTP server started on %s (bound to IP %s), forwarding to Gotify at %s", bindAddr, bindIP, config.Gotify.GotifyHost))
+    logEvent("connection", fmt.Sprintf("SMTP server started on %s, forwarding to Gotify at %s", bindAddr, config.Gotify.GotifyHost), fmt.Sprintf("SMTP server successfully started and listening on %s, configured to forward incoming emails as notifications to Gotify server at %s.", bindAddr, config.Gotify.GotifyHost))
     sigChan := make(chan os.Signal, 1)
     signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
     go func() {
         <-sigChan
-        logEvent("connection", "Received shutdown signal, closing listener...", fmt.Sprintf("Received system signal to terminate (SIGTERM or SIGINT), initiating graceful shutdown of SMTP server by closing listener on %s.", config.SMTP.Addr))
+        logEvent("connection", "Received shutdown signal, closing listener...", fmt.Sprintf("Received system signal to terminate (SIGTERM or SIGINT), initiating graceful shutdown of SMTP server by closing listener on %s.", bindAddr))
         if err := listener.Close(); err != nil {
-            logEvent("error", fmt.Sprintf("Error closing listener: %v", err), fmt.Sprintf("Failed to close TCP listener on %s during shutdown: %v", config.SMTP.Addr, err))
+            logEvent("error", fmt.Sprintf("Error closing listener: %v", err), fmt.Sprintf("Failed to close TCP listener on %s during shutdown: %v", bindAddr, err))
         }
         // Recommendation 14: Wait for active connections to complete with timeout
         shutdownTimeout := 30 * time.Second
@@ -1751,9 +1789,9 @@ func startServer(config AppConfig) error {
         }()
         select {
         case <-shutdownChan:
-            logEvent("connection", "All active connections closed, shutdown complete.", fmt.Sprintf("Graceful shutdown completed, all SMTP connections on %s have been closed.", config.SMTP.Addr))
+            logEvent("connection", "All active connections closed, shutdown complete.", fmt.Sprintf("Graceful shutdown completed, all SMTP connections on %s have been closed.", bindAddr))
         case <-time.After(shutdownTimeout):
-            logEvent("warning", "Shutdown timeout reached, forcing exit with active connections.", fmt.Sprintf("Graceful shutdown timeout of %v reached, forcing exit while connections may still be active on %s.", shutdownTimeout, config.SMTP.Addr))
+            logEvent("warning", "Shutdown timeout reached, forcing exit with active connections.", fmt.Sprintf("Graceful shutdown timeout of %v reached, forcing exit while connections may still be active on %s.", shutdownTimeout, bindAddr))
         }
         os.Exit(0)
     }()
@@ -1763,7 +1801,7 @@ func startServer(config AppConfig) error {
             if opErr, ok := err.(*net.OpError); ok && opErr.Op == "accept" {
                 break
             }
-            logEvent("error", fmt.Sprintf("Error accepting connection: %v", err), fmt.Sprintf("Failed to accept incoming TCP connection on %s: %v", config.SMTP.Addr, err))
+            logEvent("error", fmt.Sprintf("Error accepting connection: %v", err), fmt.Sprintf("Failed to accept incoming TCP connection on %s: %v", bindAddr, err))
             continue
         }
         go handleConnection(conn, config)
