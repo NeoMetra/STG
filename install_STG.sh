@@ -509,21 +509,92 @@ EOF
 
 # Installation for Debian 12 (SystemD)
 install_debian() {
-    # Update package lists and install Go compiler
-    echo "${YELLOW}Updating package lists and installing Go compiler...${NC}"
+    # Update package lists
+    echo "${YELLOW}Updating package lists...${NC}"
     apt update
     if [ $? -ne 0 ]; then
         echo "${RED}Error: Failed to update package lists. Please check internet connectivity.${NC}"
         exit 1
     fi
-    apt install -y golang
+    # Install basic tools if not already present
+    echo "${YELLOW}Installing necessary tools (wget, tar)...${NC}"
+    apt install -y wget tar
     if [ $? -ne 0 ]; then
-        echo "${RED}Error: Failed to install Go compiler. Please ensure apt is configured and internet access is available.${NC}"
+        echo "${RED}Error: Failed to install necessary tools. Please ensure apt is configured and internet access is available.${NC}"
         exit 1
-    else
-        echo "${GREEN}Go compiler installed successfully. ${CHECKMARK}${NC}"
     fi
-    GO_CMD="go"
+    # Check if Go is installed and its version
+    echo "${YELLOW}Checking for existing Go installation...${NC}"
+    GO_INSTALLED=false
+    GO_VERSION_OK=false
+    if command -v go >/dev/null 2>&1; then
+        GO_INSTALLED=true
+        GO_VERSION_STR=$(go version | awk '{print $3}' | sed 's/go//')
+        echo "${YELLOW}Found Go version: ${GO_VERSION_STR}${NC}"
+        # Compare version (need at least Go 1.21 for log/slog and slices)
+        GO_MAJOR=$(echo "${GO_VERSION_STR}" | cut -d. -f1)
+        GO_MINOR=$(echo "${GO_VERSION_STR}" | cut -d. -f2)
+        if [ "${GO_MAJOR}" -gt 1 ] || { [ "${GO_MAJOR}" -eq 1 ] && [ "${GO_MINOR}" -ge 21 ]; }; then
+            GO_VERSION_OK=true
+            echo "${GREEN}Go version ${GO_VERSION_STR} is sufficient (>= 1.21). ${CHECKMARK}${NC}"
+        else
+            echo "${RED}Go version ${GO_VERSION_STR} is too old (< 1.21). A newer version will be installed.${NC}"
+        fi
+    else
+        echo "${YELLOW}Go is not installed. A newer version will be installed.${NC}"
+    fi
+    # Install or update Go if necessary
+    if [ "${GO_INSTALLED}" = false ] || [ "${GO_VERSION_OK}" = false ]; then
+        echo "${YELLOW}Downloading and installing Go 1.22 (or latest)...${NC}"
+        GO_TARBALL="go1.22.5.linux-amd64.tar.gz"
+        GO_URL="https://golang.org/dl/${GO_TARBALL}"
+        wget -O /tmp/${GO_TARBALL} "${GO_URL}"
+        if [ $? -ne 0 ]; then
+            echo "${RED}Error: Failed to download Go from ${GO_URL}. Please check internet connectivity.${NC}"
+            exit 1
+        fi
+        # Remove old Go if it exists
+        if [ -d "/usr/local/go" ]; then
+            echo "${YELLOW}Removing old Go installation at /usr/local/go...${NC}"
+            rm -rf /usr/local/go
+        fi
+        # Extract and install Go
+        echo "${YELLOW}Extracting and installing Go to /usr/local...${NC}"
+        tar -C /usr/local -xzf /tmp/${GO_TARBALL}
+        if [ $? -ne 0 ]; then
+            echo "${RED}Error: Failed to extract Go tarball.${NC}"
+            exit 1
+        fi
+        # Set up environment variables for Go
+        echo "${YELLOW}Setting up Go environment variables...${NC}"
+        if ! grep -q "export PATH=\$PATH:/usr/local/go/bin" /etc/profile; then
+            echo "export PATH=\$PATH:/usr/local/go/bin" >> /etc/profile
+        fi
+        if ! grep -q "export GOPATH=\$HOME/go" /etc/profile; then
+            echo "export GOPATH=\$HOME/go" >> /etc/profile
+        fi
+        if ! grep -q "export PATH=\$PATH:\$GOPATH/bin" /etc/profile; then
+            echo "export PATH=\$PATH:\$GOPATH/bin" >> /etc/profile
+        fi
+        # Apply environment changes for the current session
+        export PATH=$PATH:/usr/local/go/bin
+        export GOPATH=$HOME/go
+        export PATH=$PATH:$GOPATH/bin
+        # Clean up tarball
+        rm -f /tmp/${GO_TARBALL}
+        echo "${GREEN}Go 1.22 installed successfully at /usr/local/go. ${CHECKMARK}${NC}"
+    fi
+    GO_CMD="/usr/local/go/bin/go"
+    if [ ! -x "${GO_CMD}" ]; then
+        GO_CMD="go"
+    fi
+    # Verify Go version again
+    echo "${YELLOW}Verifying Go version...${NC}"
+    ${GO_CMD} version
+    if [ $? -ne 0 ]; then
+        echo "${RED}Error: Go compiler is not working correctly. Please check installation.${NC}"
+        exit 1
+    fi
     # Create source directory for downloading the source code
     echo "${YELLOW}Creating temporary source directory: ${SOURCE_DIR}...${NC}"
     mkdir -p "${SOURCE_DIR}"
@@ -707,7 +778,6 @@ EOF
     echo "  ${GREEN}$0 --uninstall${NC}"
     exit 0
 }
-
 # Execute the appropriate installation based on OS type
 if [ "$OS_TYPE" = "pfsense" ]; then
     install_pfsense
