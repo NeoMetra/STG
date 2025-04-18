@@ -5,6 +5,7 @@
 # sets up directories, and configures a service to run at boot.
 # It also supports uninstalling the program and undoing all changes with the --uninstall argument.
 # Enhanced with colored UI and confirmation prompts for user interaction using tput for portability.
+# Supports non-interactive mode with --no-confirm for automated installations.
 
 # Define variables
 BINARY_NAME="smtp-to-gotify"
@@ -40,8 +41,9 @@ CHECKMARK="${GREEN}✓${NC}"
 
 # Function to display usage
 usage() {
-    echo "${YELLOW}Usage: $0 [--uninstall]${NC}"
+    echo "${YELLOW}Usage: $0 [--uninstall] [--no-confirm]${NC}"
     echo "  --uninstall: Remove smtp-to-gotify and undo all installation changes."
+    echo "  --no-confirm: Skip confirmation prompts for automated installations."
     exit 1
 }
 
@@ -49,6 +51,10 @@ usage() {
 confirm() {
     local prompt="$1"
     local response
+    if [ "$NO_CONFIRM" = true ] || ! [ -t 0 ]; then
+        echo "${YELLOW}${prompt} (y/N): Automatically confirmed.${NC}"
+        return 0
+    fi
     echo "${YELLOW}${prompt} (y/N): ${NC}"
     read response
     case "$response" in
@@ -62,12 +68,14 @@ confirm() {
     esac
 }
 
-# Check for uninstall argument
+# Check for arguments
 UNINSTALL=false
+NO_CONFIRM=false
 for arg in "$@"; do
     if [ "$arg" = "--uninstall" ]; then
         UNINSTALL=true
-        break
+    elif [ "$arg" = "--no-confirm" ]; then
+        NO_CONFIRM=true
     elif [ "$arg" = "-h" ] || [ "$arg" = "--help" ]; then
         usage
     fi
