@@ -470,13 +470,13 @@ EOF
     else
         echo "${RED}Warning: Failed to enable service in ${RC_CONF_FILE}. You may need to enable it manually.${NC}"
     fi
-    # Check if config file exists; if not, create a placeholder
-    echo "${YELLOW}Creating placeholder config file if it doesn't exist...${NC}"
-    if [ ! -f "${CONFIG_FILE}" ]; then
-        cat > "${CONFIG_FILE}" << 'EOF'
+# Check if config file exists; if not, create a placeholder
+echo "${YELLOW}Creating placeholder config file if it doesn't exist...${NC}"
+if [ ! -f "${CONFIG_FILE}" ]; then
+    cat > "${CONFIG_FILE}" << 'EOF'
 smtp:
   addr: ":2525"
-  domain: "localhost"
+  domain: "127.0.0.1"
   smtp_username: "admin"
   smtp_password: "password"
   auth_required: true
@@ -484,16 +484,20 @@ gotify:
   gotify_host: "https://gotify.example.com"
   gotify_token: ""
 EOF
-        chmod 640 "${CONFIG_FILE}"
+    chmod 640 "${CONFIG_FILE}"
+    if [ "$OS_TYPE" = "pfsense" ]; then
         chown root:wheel "${CONFIG_FILE}"
-        if [ $? -eq 0 ]; then
-            echo "${GREEN}Placeholder config file created at ${CONFIG_FILE}. ${CHECKMARK}${NC}"
-        else
-            echo "${RED}Error: Failed to create or set permissions for config file.${NC}"
-        fi
     else
-        echo "${GREEN}Config file already exists at ${CONFIG_FILE}. ${CHECKMARK}${NC}"
+        chown root:root "${CONFIG_FILE}"
     fi
+    if [ $? -eq 0 ]; then
+        echo "${GREEN}Placeholder config file created at ${CONFIG_FILE}. ${CHECKMARK}${NC}"
+    else
+        echo "${RED}Error: Failed to create or set permissions for config file.${NC}"
+    fi
+else
+    echo "${GREEN}Config file already exists at ${CONFIG_FILE}. ${CHECKMARK}${NC}"
+fi
     # Notify user of completion and next steps
     echo "${GREEN}Installation complete! ${CHECKMARK}${NC}"
     echo "The ${BINARY_NAME} binary has been installed to ${INSTALL_DIR}."
